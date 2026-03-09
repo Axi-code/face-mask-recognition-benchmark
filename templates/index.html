@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MaskBench - 口罩识别多模型评测台</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <main class="page">
+        <section class="hero">
+            <div>
+                <p class="eyebrow">MaskBench</p>
+                <h1>口罩识别多模型评测台</h1>
+                <p class="subtitle">上传同一张图片后，系统会自动运行全部已加载分类模型，统一展示在线预测、离线指标、模型分歧和真值复盘结果。</p>
+            </div>
+            <div class="status-panel">
+                <span class="status-badge {{ 'ready' if health.status == 'ok' else 'not-ready' }}" id="systemStatus">
+                    {{ '评测台已就绪' if health.status == 'ok' else '模型未加载' }}
+                </span>
+                <div class="status-meta">
+                    <span>已加载模型数：<strong id="loadedModelCount">{{ health.loaded_model_count }}</strong></span>
+                    <span>运行设备：<strong id="runtimeDevice">{{ health.device }}</strong></span>
+                    <span>类别集合：<strong id="classCatalog">{{ class_names|join(' / ') if class_names else '未加载' }}</strong></span>
+                </div>
+            </div>
+        </section>
+
+        <section class="guide card">
+            <div class="guide-step">
+                <span class="step-index">1</span>
+                <div>
+                    <h2>选择输入方式</h2>
+                    <p>你可以上传本地图片，或打开摄像头后抓取当前画面。</p>
+                </div>
+            </div>
+            <div class="guide-step">
+                <span class="step-index">2</span>
+                <div>
+                    <h2>开始统一评测</h2>
+                    <p>系统会对同一输入依次运行全部模型，并给出概率、耗时与一致性比较。</p>
+                </div>
+            </div>
+            <div class="guide-step">
+                <span class="step-index">3</span>
+                <div>
+                    <h2>公布真值后复盘</h2>
+                    <p>你可以填写真实标签，系统会展示正确率、高置信度误判和模型稳定性分析。</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="workspace">
+            <section class="card input-card">
+                <div class="section-header">
+                    <h2>图像输入</h2>
+                    <div class="segmented" id="inputModeSwitch">
+                        <button type="button" class="segmented-item active" data-mode="upload">上传图片</button>
+                        <button type="button" class="segmented-item" data-mode="camera">摄像头</button>
+                    </div>
+                </div>
+
+                <div id="uploadPanel" class="input-panel active">
+                    <form id="uploadForm" class="stack-form">
+                        <label class="file-dropzone" for="imageInput">
+                            <input type="file" id="imageInput" name="image" accept="image/*" required>
+                            <span class="file-title">点击选择图片</span>
+                            <span class="file-hint">建议上传正脸、清晰、光线稳定的照片</span>
+                        </label>
+                        <div class="actions">
+                            <button type="submit" id="uploadSubmit">开始评测</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div id="cameraPanel" class="input-panel">
+                    <video id="camera" autoplay playsinline></video>
+                    <canvas id="canvas" class="hidden"></canvas>
+                    <div class="camera-tip" id="cameraTip">请先打开摄像头，再将人物面部保持在画面中央。</div>
+                    <div class="actions">
+                        <button type="button" id="startCamera">打开摄像头</button>
+                        <button type="button" id="captureFrame" disabled>抓帧评测</button>
+                    </div>
+                </div>
+
+                <div class="preview-wrapper">
+                    <img id="previewImage" class="preview hidden" alt="预览图片">
+                    <div id="emptyPreview" class="empty-preview">评测前会在这里显示图片预览</div>
+                </div>
+            </section>
+
+            <section class="card overview-card">
+                <div class="section-header">
+                    <h2>离线模型概览</h2>
+                    <span class="result-chip" id="resultChip">等待评测</span>
+                </div>
+                <div id="resultState" class="result-state">请选择一张图片或使用摄像头开始评测。</div>
+                <div class="model-catalog" id="modelCatalog">
+                    {% for option in model_catalog %}
+                    <article class="catalog-card">
+                        <div class="catalog-head">
+                            <strong>{{ option.display_name }}</strong>
+                            <span class="catalog-badge">{{ option.source }}</span>
+                        </div>
+                        <div class="catalog-meta">
+                            <span>best val：{{ "%.3f"|format(option.get('best_val_accuracy')) if option.get('best_val_accuracy') is not none else "-" }}</span>
+                            <span>test acc：{{ "%.3f"|format(option.get('test_accuracy')) if option.get('test_accuracy') is not none else "-" }}</span>
+                            <span>macro f1：{{ "%.3f"|format(option.get('macro_f1')) if option.get('macro_f1') is not none else "-" }}</span>
+                            <span>延迟：{{ "%.2f ms"|format(option.get('avg_inference_latency_ms')) if option.get('avg_inference_latency_ms') is not none else "-" }}</span>
+                        </div>
+                    </article>
+                    {% endfor %}
+                </div>
+            </section>
+        </section>
+
+        <section class="card dashboard-card">
+            <div class="section-header">
+                <h2>在线评测结果</h2>
+                <span class="result-chip pending" id="dashboardChip">等待评测</span>
+            </div>
+            <div id="dashboardState" class="result-state">上传图片后，这里会展示多模型在线对比结果。</div>
+            <div id="dashboardContent" class="dashboard-content hidden">
+                <section>
+                    <h3>总体概览</h3>
+                    <div class="summary-grid" id="summaryGrid"></div>
+                    <div class="advice-box" id="consensusBox">-</div>
+                </section>
+
+                <section>
+                    <h3>模型逐项结果</h3>
+                    <div class="model-results-grid" id="modelResultsGrid"></div>
+                </section>
+
+                <section class="charts-grid">
+                    <article class="chart-card">
+                        <h3>Top-1 置信度对比</h3>
+                        <div id="confidenceChart" class="chart-stack"></div>
+                    </article>
+                    <article class="chart-card">
+                        <h3>类别概率矩阵</h3>
+                        <div id="probabilityMatrix" class="matrix-grid"></div>
+                    </article>
+                    <article class="chart-card">
+                        <h3>投票分布</h3>
+                        <div id="voteChart" class="chart-stack"></div>
+                    </article>
+                    <article class="chart-card">
+                        <h3>在线耗时对比</h3>
+                        <div id="latencyChart" class="chart-stack"></div>
+                    </article>
+                </section>
+            </div>
+        </section>
+
+        <section class="card truth-card">
+            <div class="section-header">
+                <h2>公布真实答案后复盘</h2>
+                <span class="result-chip" id="truthChip">等待真值</span>
+            </div>
+            <form id="truthForm" class="stack-form truth-form">
+                <label>
+                    真实标签
+                    <select id="truthSelect" required>
+                        <option value="">请选择真实标签</option>
+                        {% for class_name in class_names %}
+                        <option value="{{ class_name }}">{{ label_map.get(class_name, class_name) }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <div class="actions">
+                    <button type="submit" id="truthSubmit">公布答案并分析</button>
+                </div>
+            </form>
+            <div id="truthState" class="result-state">先完成一次在线评测，再填写真实标签进行复盘分析。</div>
+            <div id="truthContent" class="dashboard-content hidden">
+                <section>
+                    <h3>真值分析概览</h3>
+                    <div class="summary-grid" id="truthSummaryGrid"></div>
+                    <div class="insight-list" id="truthInsights"></div>
+                </section>
+
+                <section class="charts-grid">
+                    <article class="chart-card">
+                        <h3>正确/错误对比</h3>
+                        <div id="correctnessChart" class="chart-stack"></div>
+                    </article>
+                    <article class="chart-card">
+                        <h3>真实类别得分</h3>
+                        <div id="truthScoreChart" class="chart-stack"></div>
+                    </article>
+                </section>
+
+                <section>
+                    <h3>逐模型复盘</h3>
+                    <div class="truth-table" id="truthTable"></div>
+                </section>
+            </div>
+        </section>
+    </main>
+    <script id="initialModelCatalog" type="application/json">{{ model_catalog|tojson }}</script>
+    <script id="initialClassNames" type="application/json">{{ class_names|tojson }}</script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+seed: 42
+experiment_name: maskbench_baseline
+model:
+  name: resnet34
+  pretrained: true
+  classifier_dropout: 0.1
+data:
+  root: data
+  image_size: 224
+  batch_size: 16
+  num_workers: 0
+  mean: [0.1726, 0.1515, 0.1427]
+  std: [0.0736, 0.0622, 0.0593]
+  augment: true
+  val_ratio: 0.2
+  prefer_explicit_val: true
+  use_roi: true
+  roi_mode: face
+  roi_fallback: smart_crop
+train:
+  epochs: 20
+  lr: 0.0003
+  min_lr: 0.000001
+  weight_decay: 0.0005
+  label_smoothing: 0.05
+  early_stopping_metric: val_loss
+  early_stopping_patience: 4
+  early_stopping_min_delta: 0.0005
+inference:
+  confidence_threshold: 0.7
+  roi_mode: face
+  roi_fallback: smart_crop
+  label_map:
+    mask: 已佩戴口罩
+    no_mask: 未佩戴口罩

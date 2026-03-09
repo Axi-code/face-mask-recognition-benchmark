@@ -1,0 +1,9 @@
+torch
+torchvision
+Pillow
+numpy
+matplotlib
+PyYAML
+Flask
+tqdm
+opencv-python-headless
