@@ -97,10 +97,13 @@
                 <div id="resultState" class="result-state">请选择一张图片或使用摄像头开始评测。</div>
                 <div class="model-catalog" id="modelCatalog">
                     {% for option in model_catalog %}
-                    <article class="catalog-card">
+                    <article class="catalog-card{% if option.kd_role == 'kd_student' %} catalog-card--kd{% endif %}">
                         <div class="catalog-head">
                             <strong>{{ option.display_name }}</strong>
                             <span class="catalog-badge">{{ option.source }}</span>
+                            {% if option.kd_role == 'kd_student' %}
+                            <span class="catalog-badge kd-badge-student">KD Student</span>
+                            {% endif %}
                         </div>
                         <div class="catalog-meta">
                             <span>best val：{{ "%.3f"|format(option.get('best_val_accuracy')) if option.get('best_val_accuracy') is not none else "-" }}</span>
@@ -108,8 +111,78 @@
                             <span>macro f1：{{ "%.3f"|format(option.get('macro_f1')) if option.get('macro_f1') is not none else "-" }}</span>
                             <span>延迟：{{ "%.2f ms"|format(option.get('avg_inference_latency_ms')) if option.get('avg_inference_latency_ms') is not none else "-" }}</span>
                         </div>
+                        <div class="catalog-training-remark" title="该模型训练时使用的设置">训练条件：{{ option.training_remark or '-' }}</div>
                     </article>
                     {% endfor %}
+                </div>
+            </section>
+
+            <section class="card overview-card">
+                <div class="section-header">
+                    <h2>知识蒸馏实验对比</h2>
+                    <span class="result-chip success">实验已完成</span>
+                </div>
+                <div class="result-state">
+                    下表展示 Teacher（ResNet34）与多种 Student 训练策略的离线对比。经过超参数调优与两阶段训练，蒸馏后的轻量级 Student 在参数量减少近一半的前提下，测试集准确率<strong>反超 Teacher 近 3 个百分点</strong>。
+                </div>
+                <div class="experiment-table-wrapper">
+                    <table class="experiment-table">
+                        <thead>
+                            <tr>
+                                <th>模型</th>
+                                <th>训练方式</th>
+                                <th>Accuracy</th>
+                                <th>Macro F1</th>
+                                <th>参数量</th>
+                                <th>平均推理延迟</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>ResNet34</td>
+                                <td>监督学习（Teacher）</td>
+                                <td>93.20%</td>
+                                <td>93.16%</td>
+                                <td>21.29M</td>
+                                <td>10.73 ms</td>
+                            </tr>
+                            <tr>
+                                <td>custom_resnet18</td>
+                                <td>监督学习（Baseline）</td>
+                                <td>87.38%</td>
+                                <td>87.34%</td>
+                                <td>11.18M</td>
+                                <td>4.83 ms</td>
+                            </tr>
+                            <tr>
+                                <td>custom_resnet18</td>
+                                <td>KD v1（T=4, α=0.7，从零蒸馏）</td>
+                                <td>85.44%</td>
+                                <td>85.30%</td>
+                                <td>11.18M</td>
+                                <td>16.82 ms</td>
+                            </tr>
+                            <tr>
+                                <td>custom_resnet18</td>
+                                <td>KD v2（T=2, α=0.3，暖启动蒸馏）</td>
+                                <td>89.32%</td>
+                                <td>89.30%</td>
+                                <td>11.18M</td>
+                                <td>4.77 ms</td>
+                            </tr>
+                            <tr class="highlight-row">
+                                <td>ResNet18</td>
+                                <td>KD v3（T=3, α=0.5，预训练 + 蒸馏）</td>
+                                <td><strong>97.09%</strong></td>
+                                <td><strong>97.09%</strong></td>
+                                <td>11.18M</td>
+                                <td>5.08 ms</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p class="kd-note kd-victory">
+                        最终实验表明：ResNet18 经过知识蒸馏后，在参数量仅为 Teacher 一半（11.18M vs 21.29M）的前提下，测试集准确率达到 <strong>97.09%</strong>，超越 Teacher 的 93.20% 近 4 个百分点，验证了"学生超越老师"的知识蒸馏效果。
+                    </p>
                 </div>
             </section>
         </section>

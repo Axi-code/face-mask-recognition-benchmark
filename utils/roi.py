@@ -10,7 +10,20 @@ except ImportError:  # pragma: no cover - optional dependency
 
 
 class RegionExtractor:
+    """
+    从整图中提取感兴趣区域（ROI），用于口罩分类时聚焦人脸区域。
+    支持人脸检测（Haar）与多种兜底裁剪方式（smart_crop、center_crop、full_image）。
+    """
+
     def __init__(self, mode="face", fallback_mode="smart_crop"):
+        """
+        初始化 ROI 提取器。
+
+        Args:
+            mode: 主模式，如 "face" 表示优先用人脸检测确定 ROI。
+            fallback_mode: 当人脸检测失败时的兜底方式："smart_crop"（偏上居中裁剪）、
+                          "center_crop"（居中正方）、"full_image"（不裁剪，返回原图）。
+        """
         self.mode = mode
         self.fallback_mode = fallback_mode
         self.face_cascade = None
@@ -21,6 +34,17 @@ class RegionExtractor:
                 self.face_cascade = cascade
 
     def extract(self, image):
+        """
+        从输入图像中提取 ROI（人脸或兜底裁剪），并返回裁剪后的图像与提取信息。
+
+        Args:
+            image: PIL Image 或可 convert("RGB") 的图像。
+
+        Returns:
+            tuple: (roi_image, info_dict)。roi_image 为 PIL Image；
+                   info_dict 含 mode、fallback_mode、detector_used、roi_applied、bbox、
+                   source_size、roi_size、elapsed_ms 等。
+        """
         start_time = time.perf_counter()
         image = image.convert("RGB")
         bbox = None
@@ -56,6 +80,10 @@ class RegionExtractor:
         }
 
     def _detect_face_bbox(self, image):
+        """
+        使用 OpenCV Haar 级联检测器检测人脸，返回最大人脸的扩展边界框 (left, top, right, bottom)。
+        若无检测结果则返回 None。
+        """
         image_array = np.array(image)
         gray = cv2.cvtColor(image_array, cv2.COLOR_RGB2GRAY)
         faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(48, 48))
@@ -65,6 +93,9 @@ class RegionExtractor:
         return self._expand_bbox(image.width, image.height, x, y, w, h)
 
     def _fallback_bbox(self, image):
+        """
+        在人脸检测失败时根据 fallback_mode 计算裁剪区域：smart_crop / center_crop 返回 (l,t,r,b)，full_image 返回 None。
+        """
         width, height = image.size
         if self.fallback_mode == "smart_crop":
             crop_size = int(min(width, height) * 0.82)
@@ -83,6 +114,10 @@ class RegionExtractor:
 
     @staticmethod
     def _expand_bbox(image_width, image_height, x, y, w, h):
+        """
+        将人脸框 (x, y, w, h) 按固定比例扩大并限制在图像范围内，得到 (left, top, right, bottom)。
+        用于包含更多上下文（如额头、下巴）以利于分类。
+        """
         center_x = x + w / 2
         center_y = y + h / 2
         size = int(max(w, h) * 1.9)

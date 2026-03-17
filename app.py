@@ -9,11 +9,31 @@ from utils.checkpointing import summarize_checkpoint
 
 
 def load_app_config(config_path="configs/baseline.yaml"):
+    """
+    从 YAML 文件加载应用配置（模型、数据、推理等）。
+
+    Args:
+        config_path: 配置文件路径，默认 configs/baseline.yaml。
+
+    Returns:
+        dict: 解析后的配置字典。
+    """
     with open(config_path, "r", encoding="utf-8") as file:
         return yaml.safe_load(file)
 
 
 def collect_model_options(config):
+    """
+    从项目根目录的 best_model.pth 与 results 下各实验的 metrics.json 收集可用模型选项
+    （权重路径、类别名、显示名、离线指标等），用于前端模型选择与 predictor 注册。
+    若没有任何可用权重，则返回基于 config 的「待训练」占位选项。
+
+    Args:
+        config: 应用配置（含 model、data、inference 等）。
+
+    Returns:
+        list: 模型选项列表，每项含 model_name、weights_path、display_name、class_names、label_map 等。
+    """
     results_root = Path("results")
     options = []
     seen_paths = set()
@@ -62,6 +82,54 @@ def collect_model_options(config):
         options.append(option)
         seen_paths.add(resolved_path)
 
+    for kd_metrics_path in sorted(results_root.glob("**/kd_results.json")):
+        try:
+            kd_data = json.loads(kd_metrics_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        student_checkpoint = kd_data.get("checkpoint")
+        if not student_checkpoint:
+            continue
+        checkpoint_path = Path(student_checkpoint)
+        if not checkpoint_path.is_absolute():
+            checkpoint_path = Path.cwd() / checkpoint_path
+        if not checkpoint_path.exists():
+            continue
+        resolved_path = checkpoint_path.resolve()
+        if resolved_path in seen_paths:
+            continue
+        try:
+            option = summarize_checkpoint(checkpoint_path)
+        except Exception:
+            continue
+        student_info = kd_data.get("student", {})
+        teacher_info = kd_data.get("teacher", {})
+        kd_settings = kd_data.get("kd_settings", {})
+        option["source"] = "kd"
+        option["best_val_accuracy"] = student_info.get("best_val_acc")
+        option["test_accuracy"] = kd_data.get("test_metrics", {}).get("accuracy", 0.0)
+        option["macro_f1"] = kd_data.get("test_metrics", {}).get("macro_f1", 0.0)
+        option["avg_inference_latency_ms"] = student_info.get("latency_ms")
+        option["parameter_count"] = student_info.get("params_M")
+        option["recommended_for_demo"] = False
+        option["kd_role"] = "kd_student"
+        option["kd_teacher"] = teacher_info.get("name", "unknown")
+        T = kd_settings.get("temperature", "?")
+        alpha = kd_settings.get("alpha", "?")
+        option["display_name"] = (
+            f"{option['model_name']} (KD) | test_acc={option['test_accuracy']:.3f}"
+        )
+        option["training_remark"] = (
+            f"KD: Teacher={teacher_info.get('name','?')}, "
+            f"T={T}, \u03b1={alpha}"
+        )
+        options.append(option)
+        seen_paths.add(resolved_path)
+
+    for opt in options:
+        if "kd_role" not in opt:
+            opt["kd_role"] = None
+
     if options:
         return options
 
@@ -83,11 +151,23 @@ def collect_model_options(config):
             "avg_inference_latency_ms": None,
             "parameter_count": None,
             "recommended_for_demo": False,
+            "training_conditions": None,
+            "training_remark": "待训练",
         }
     ]
 
 
 def resolve_default_weights(config):
+    """
+    从配置与已有模型选项中解析默认使用的模型名、权重路径及完整选项列表。
+    优先使用标记为 recommended_for_demo 的选项，否则选 test_accuracy 最高的。
+
+    Args:
+        config: 应用配置。
+
+    Returns:
+        tuple: (default_model_name, default_weights_path, model_options_list)。
+    """
     model_options = collect_model_options(config)
     recommended_options = [option for option in model_options if option.get("recommended_for_demo")]
     selected = recommended_options[0] if recommended_options else max(
@@ -98,6 +178,9 @@ def resolve_default_weights(config):
 
 
 def create_app():
+    """
+    创建 Flask 应用：加载配置、构建 MaskPredictor、注册 API 蓝图、绑定首页路由，返回 app 实例。
+    """
     config = load_app_config()
     app = Flask(__name__)
 
@@ -115,6 +198,7 @@ def create_app():
 
     @app.get("/")
     def index():
+        """首页路由：渲染 index.html，传入模型目录、类别名、标签映射与健康状态供前端展示。"""
         health = predictor.health()
         return render_template(
             "index.html",

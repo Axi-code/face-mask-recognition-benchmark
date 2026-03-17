@@ -10,6 +10,7 @@ from utils.dataset import DEFAULT_MEAN, DEFAULT_STD, build_inference_transform
 
 
 def parse_args():
+    """解析命令行参数：数据路径、checkpoint 路径、n_way/k_shot/q_query、评估 episode 数等。"""
     parser = argparse.ArgumentParser(description="Evaluate a trained ProtoNet on new episodes.")
     parser.add_argument("--data-root", type=str, default="data/test")
     parser.add_argument("--checkpoint", type=str, required=True)
@@ -22,6 +23,7 @@ def parse_args():
 
 
 def main():
+    """主入口：加载训练好的 ProtoNet checkpoint，在指定数据上跑若干 episode 并输出平均 loss 与准确率。"""
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

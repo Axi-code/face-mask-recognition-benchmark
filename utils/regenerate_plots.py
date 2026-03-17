@@ -13,6 +13,13 @@ import numpy as np
 
 
 def plot_training_curves(history, output_path):
+    """
+    根据 history 中的 train_loss/val_loss、train_acc/val_acc 绘制训练曲线图并保存。
+
+    Args:
+        history: 含 train_loss, val_loss, train_acc, val_acc 列表的 dict。
+        output_path: 输出图片路径（如 history.png）。
+    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     epochs = range(1, len(history["train_loss"]) + 1)
@@ -37,6 +44,14 @@ def plot_training_curves(history, output_path):
 
 
 def plot_confusion_matrix(confusion_matrix, class_names, output_path):
+    """
+    将混淆矩阵绘制为热力图，轴标签为 class_names，并保存到 output_path。
+
+    Args:
+        confusion_matrix: 二维数组或列表 (真实类 x 预测类)。
+        class_names: 类别名称列表。
+        output_path: 输出图片路径。
+    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     confusion = np.asarray(confusion_matrix)
@@ -57,6 +72,7 @@ def plot_confusion_matrix(confusion_matrix, class_names, output_path):
 
 
 def main():
+    """主入口：从 metrics.json 读取 history 与 test_metrics，重新生成 history.png 与 confusion_matrix.png，可选复制到 docs/images。"""
     parser = argparse.ArgumentParser(description="从 metrics.json 重新生成训练曲线和混淆矩阵")
     parser.add_argument(
         "metrics_path",

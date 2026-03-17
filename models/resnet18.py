@@ -3,7 +3,20 @@ from torch import nn
 
 
 class Residual(nn.Module):
+    """
+    ResNet 的残差块：两路 3x3 卷积 + 可选的 1x1  shortcut，用于改变通道数或步长。
+    """
+
     def __init__(self, input_channels, num_channels, use_1conv=False, strides=1):
+        """
+        初始化残差块。
+
+        Args:
+            input_channels: 输入通道数。
+            num_channels: 块内卷积输出通道数。
+            use_1conv: 是否使用 1x1 卷积将输入投影到 num_channels（用于 stride>1 或通道变化时）。
+            strides: 第一个 3x3 卷积的步长。
+        """
         super().__init__()
         self.relu = nn.ReLU(inplace=True)
         self.conv1 = nn.Conv2d(
@@ -36,6 +49,7 @@ class Residual(nn.Module):
         )
 
     def forward(self, x):
+        """前向：conv1-bn1-relu -> conv2-bn2，shortcut 可选 1x1 投影，最后 relu(x + shortcut)。"""
         y = self.relu(self.bn1(self.conv1(x)))
         y = self.bn2(self.conv2(y))
         if self.conv3 is not None:
@@ -44,7 +58,20 @@ class Residual(nn.Module):
 
 
 class ResNet18(nn.Module):
+    """
+    自定义 ResNet-18 结构：b1 为 7x7+BN+ReLU+MaxPool，b2~b5 为 4 组残差块（每组 2 个 block），
+    b6 为全局平均池化 + Flatten + 可选 Dropout + 线性分类头。用于口罩二分类等任务。
+    """
+
     def __init__(self, block=Residual, num_classes=2, classifier_dropout=0.0):
+        """
+        初始化 ResNet18。
+
+        Args:
+            block: 残差块类型（默认 Residual）。
+            num_classes: 分类数。
+            classifier_dropout: 分类层前的 Dropout 概率，0 表示不使用。
+        """
         super().__init__()
         self.b1 = nn.Sequential(
             nn.Conv2d(in_channels=3, out_channels=64, kernel_size=7, stride=2, padding=3, bias=False),
@@ -76,6 +103,7 @@ class ResNet18(nn.Module):
         )
 
     def forward(self, x):
+        """前向：依次通过 b1~b6，输出 logits，形状 (N, num_classes)。"""
         x = self.b1(x)
         x = self.b2(x)
         x = self.b3(x)
@@ -85,6 +113,16 @@ class ResNet18(nn.Module):
 
 
 def custom_resnet18(num_classes=2, classifier_dropout=0.0):
+    """
+    构建自定义 ResNet18 模型（项目内实现的 ResNet18 结构，非 torchvision 版本）。
+
+    Args:
+        num_classes: 分类数。
+        classifier_dropout: 分类头前 Dropout 概率。
+
+    Returns:
+        ResNet18: 模型实例。
+    """
     return ResNet18(block=Residual, num_classes=num_classes, classifier_dropout=classifier_dropout)
 
 

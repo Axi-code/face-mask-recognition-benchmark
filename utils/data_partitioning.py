@@ -8,6 +8,7 @@ VALID_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
 def parse_args():
+    """解析命令行参数：源数据目录、输出目录、测试集比例、随机种子、分组分隔符、是否清空输出等。"""
     parser = argparse.ArgumentParser(description="Split raw dataset into train/test folders.")
     parser.add_argument("--source-root", type=str, default="dataset")
     parser.add_argument("--output-root", type=str, default="data")
@@ -28,10 +29,30 @@ def parse_args():
 
 
 def collect_images(class_dir):
+    """
+    收集类别目录下所有有效图片路径（按文件名排序）。
+
+    Args:
+        class_dir: 某一类别的目录 Path（如 dataset/mask/）。
+
+    Returns:
+        list: 该目录下符合 VALID_SUFFIXES 的 Path 列表。
+    """
     return [path for path in sorted(class_dir.iterdir()) if path.suffix.lower() in VALID_SUFFIXES]
 
 
 def group_images(images, separator):
+    """
+    按「组」对图片路径分组：文件名 stem 在 separator 前的部分作为 group_key，
+    便于同一人/同一组样本在划分时尽量不拆散（整组进 train 或 test）。
+
+    Args:
+        images: 图片路径列表。
+        separator: 分隔符（如 "_"），stem.split(separator)[0] 为组键。
+
+    Returns:
+        dict: {group_key: [path1, path2, ...]}。
+    """
     grouped_images = {}
     for image_path in images:
         stem = image_path.stem
@@ -41,6 +62,7 @@ def group_images(images, separator):
 
 
 def main():
+    """主入口：按类别与可选分组将源目录数据按 test_ratio 划分到 train/test 子目录并复制文件。"""
     args = parse_args()
     random.seed(args.seed)
 

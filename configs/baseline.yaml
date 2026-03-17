@@ -27,7 +27,7 @@ train:
   early_stopping_patience: 4
   early_stopping_min_delta: 0.0005
 inference:
-  confidence_threshold: 0.7
+  confidence_threshold: 0.5
   roi_mode: face
   roi_fallback: smart_crop
   label_map:

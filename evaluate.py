@@ -1,3 +1,6 @@
+"""
+评估与单图推理入口：加载 checkpoint、在测试集上计算分类指标，或对单张图片进行预测并输出 JSON。
+"""
 import argparse
 import json
 import time
@@ -15,6 +18,7 @@ from utils.roi import RegionExtractor
 
 
 def parse_args():
+    """解析命令行参数：模型名、权重路径、数据根目录、批大小、图像尺寸、单图路径、ROI/置信度等。"""
     parser = argparse.ArgumentParser(description="Evaluate classification model or infer a single image.")
     parser.add_argument("--model", type=str, default="custom_resnet18", choices=AVAILABLE_MODELS)
     parser.add_argument("--weights", type=str, default="best_model.pth")
@@ -32,6 +36,18 @@ def parse_args():
 
 
 def evaluate_dataset(model, dataloader, device, class_names):
+    """
+    在测试集 DataLoader 上评估模型，收集所有预测与真实标签后计算分类指标（准确率、F1、混淆矩阵等）。
+
+    Args:
+        model: 已加载的分类模型。
+        dataloader: 测试集 DataLoader。
+        device: 设备。
+        class_names: 类别名称列表。
+
+    Returns:
+        dict: compute_classification_metrics 的返回值（accuracy、macro_f1、confusion_matrix、per_class 等）。
+    """
     model.eval()
     y_true = []
     y_pred = []
@@ -48,6 +64,10 @@ def evaluate_dataset(model, dataloader, device, class_names):
 
 
 def resolve_overrides(args):
+    """
+    将命令行参数中与默认值不同的项转为 get_inference_config 的 overrides 字典
+    （如图像尺寸、均值方差、ROI、置信度阈值等）。
+    """
     overrides = {}
     if args.image_size != 224:
         overrides["image_size"] = args.image_size
@@ -65,6 +85,21 @@ def resolve_overrides(args):
 
 
 def predict_single_image(model, image_path, inference_config, model_name, weights_path, device):
+    """
+    对单张图片进行 ROI 提取、变换、推理，并组装为 build_prediction_payload 结果后打印 JSON。
+    若指定 report_dir 则可将结果保存为 single_image_prediction.json。
+
+    Args:
+        model: 已加载的模型。
+        image_path: 图片路径。
+        inference_config: 推理配置（含 roi_mode、roi_fallback、image_size、mean、std、class_names、label_map、confidence_threshold）。
+        model_name: 模型名称。
+        weights_path: 权重路径（字符串）。
+        device: 设备。
+
+    Returns:
+        dict: 单图预测 payload。
+    """
     extractor = RegionExtractor(
         mode=inference_config["roi_mode"],
         fallback_mode=inference_config["roi_fallback"],
@@ -102,6 +137,7 @@ def predict_single_image(model, image_path, inference_config, model_name, weight
 
 
 def main():
+    """主入口：加载 checkpoint、构建 DataLoader 与模型；若指定 --image 则对单图预测并输出 JSON，否则在测试集上评估并输出指标与可选报告。"""
     args = parse_args()
     checkpoint = load_checkpoint(args.weights)
     inference_config = get_inference_config(checkpoint, overrides=resolve_overrides(args))

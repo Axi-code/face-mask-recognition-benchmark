@@ -18,6 +18,7 @@ from utils.metrics import save_json
 
 
 def parse_args():
+    """解析命令行参数，包括数据路径、骨干网络、N-way K-shot、训练轮数等。"""
     parser = argparse.ArgumentParser(description="Train a prototypical network for few-shot mask recognition.")
     parser.add_argument("--train-root", type=str, default="data/train")
     parser.add_argument("--val-root", type=str, default="data/test")
@@ -37,6 +38,7 @@ def parse_args():
 
 
 def set_seed(seed):
+    """设置 random、numpy、torch 的随机种子以保证实验可复现。"""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -45,6 +47,16 @@ def set_seed(seed):
 
 
 def squeeze_episode(batch, device):
+    """
+    将 DataLoader 返回的 episode 批次去掉 batch 维并移到指定设备（batch_size=1 时使用）。
+
+    Args:
+        batch: 来自 EpisodeDataset 的 dict，各项为 (1, ...) 形状的 tensor。
+        device: 目标设备（如 cuda/cpu）。
+
+    Returns:
+        dict: support_images, support_labels, query_images, query_labels 均已 squeeze(0) 并 to(device)。
+    """
     return {
         "support_images": batch["support_images"].squeeze(0).to(device),
         "support_labels": batch["support_labels"].squeeze(0).to(device),
@@ -54,6 +66,17 @@ def squeeze_episode(batch, device):
 
 
 def run_episode(model, batch, n_way):
+    """
+    在一个 episode 上前向计算并得到 loss 与 accuracy。
+
+    Args:
+        model: ProtoNet 模型。
+        batch: 包含 support/query 图像与标签的 dict。
+        n_way: 类别数。
+
+    Returns:
+        tuple: (loss, accuracy)，均为标量。
+    """
     support_embeddings = model(batch["support_images"])
     query_embeddings = model(batch["query_images"])
     loss, accuracy, _ = prototypical_loss(
@@ -67,6 +90,18 @@ def run_episode(model, batch, n_way):
 
 
 def evaluate(model, dataloader, device, n_way):
+    """
+    在验证/测试的 episode 数据上评估模型，返回平均 loss 与平均 accuracy。
+
+    Args:
+        model: ProtoNet 模型。
+        dataloader: Episode 的 DataLoader（batch_size=1）。
+        device: 设备。
+        n_way: 类别数。
+
+    Returns:
+        tuple: (avg_loss, avg_accuracy)。
+    """
     model.eval()
     total_loss = 0.0
     total_acc = 0.0
@@ -84,6 +119,13 @@ def evaluate(model, dataloader, device, n_way):
 
 
 def plot_history(history, output_path):
+    """
+    根据训练历史绘制 loss 与 accuracy 曲线图并保存。
+
+    Args:
+        history: dict，包含 train_loss, val_loss, train_acc, val_acc 四个列表。
+        output_path: 图片保存路径。
+    """
     plt.figure(figsize=(10, 4))
     epochs = range(1, len(history["train_loss"]) + 1)
 
@@ -107,6 +149,7 @@ def plot_history(history, output_path):
 
 
 def main():
+    """主入口：解析参数、构建 Episode 数据集与 DataLoader、训练 ProtoNet 并保存最佳权重与指标。"""
     args = parse_args()
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

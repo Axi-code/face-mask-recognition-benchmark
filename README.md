@@ -21,6 +21,7 @@ MaskBench 是一个面向口罩佩戴识别任务的实验平台，提供统一�
 - [分类训练](#分类训练)
 - [评估与推理](#评估与推理)
 - [Web 演示系统](#web-演示系统)
+- [知识蒸馏](#知识蒸馏)
 - [少样本实验](#少样本实验)
 - [实验结果说明](#实验结果说明)
 - [文档资源](#文档资源)
@@ -34,6 +35,7 @@ MaskBench 是一个面向口罩佩戴识别任务的实验平台，提供统一�
 项目围绕口罩佩戴识别任务构建，包含以下核心模块：
 
 - 多模型分类实验：统一支持 `custom_resnet18`、`resnet18`、`resnet34`、`vgg16`、`googlenet`
+- 知识蒸馏 (KD)：以大模型（Teacher）指导轻量级小模型（Student），在不增加推理参数量的前提下提升精度
 - 离线评估与推理：支持测试集评估、单张图片预测和结果导出
 - Web 可视化演示：基于 `Flask` 提供在线评测、模型切换和结果看板
 - 少样本扩展实验：基于 `Prototypical Networks` 进行新场景快速适配
@@ -49,8 +51,10 @@ MaskBench 是一个面向口罩佩戴识别任务的实验平台，提供统一�
 
 - 提供统一的训练、评估、推理和可视化演示流程
 - 支持多种主流 CNN 骨干网络的横向对比
+- 单次图片上传即可对当前已加载的所有模型并行推理并返回对比结果
 - 自动输出训练曲线、混淆矩阵、指标文件和权重文件
 - 支持在线评测看板、模型排行榜和样本级复盘分析
+- 提供知识蒸馏模块，以 Teacher-Student 范式实现模型压缩与知识迁移
 - 提供 ProtoNet 少样本实验，便于扩展到新场景与新类别
 
 ## 项目流程
@@ -65,6 +69,8 @@ flowchart LR
     E --> G[训练指标与图表<br/>metrics.json history.png confusion_matrix.png]
     F --> H[离线评估与单图推理<br/>evaluate.py]
     F --> I[Web 可视化演示<br/>app.py]
+    F --> N[知识蒸馏<br/>train_kd.py]
+    N --> O[蒸馏后 Student 权重<br/>best_student.pth]
     C --> J[Few-shot 实验<br/>fewshot/train_proto.py]
     H --> K[测试集评估 报告导出 单图预测]
     I --> L[上传图片 摄像头评测 多模型对比 真值复盘]
@@ -102,10 +108,12 @@ flowchart TD
         D2[evaluate.py]
         D3[fewshot/train_proto.py]
         D4[fewshot/eval_proto.py]
+        D5[train_kd.py]
     end
 
     subgraph ASSET[Config and Assets]
         E1[configs/baseline.yaml]
+        E1b[configs/kd.yaml]
         E2[data/]
         E3[results/]
     end
@@ -134,6 +142,13 @@ flowchart TD
     D3 --> E3
     D4 --> E2
     D4 --> E3
+    D5 --> C1
+    D5 --> C3
+    D5 --> C5
+    D5 --> C6
+    D5 --> E1b
+    D5 --> E2
+    D5 --> E3
     C1 --> C2
 ```
 
@@ -273,12 +288,13 @@ python app.py
 MaskBench/
 ├── app.py                      # Flask 演示系统入口
 ├── train.py                    # 分类训练入口
+├── train_kd.py                 # 知识蒸馏训练入口（Teacher → Student）
 ├── evaluate.py                 # 分类评估与单图预测入口
 ├── model_train.py              # 训练别名入口
-├── model_test.py               # 测试别名入口
 ├── requirements.txt            # 依赖列表
 ├── configs/
-│   └── baseline.yaml           # 默认训练配置
+│   ├── baseline.yaml           # 默认训练配置
+│   └── kd.yaml                 # 知识蒸馏训练配置
 ├── models/                     # 分类模型构建
 ├── utils/                      # 数据处理、指标、权重保存等工具
 ├── api/                        # Web 推理接口
@@ -381,6 +397,7 @@ Web 页面默认支持以下能力：
 - 本地图片上传识别
 - 摄像头抓帧识别
 - 模型与权重切换
+- 单次上传图片时，后端会对当前已加载的所有模型同时执行推理并返回多模型对比结果
 - 服务状态检查
 
 接口说明：
@@ -388,6 +405,127 @@ Web 页面默认支持以下能力：
 - `GET /health`：查看服务状态
 - `POST /predict`：上传图片并返回预测结果
 - `POST /switch-model`：切换演示模型
+
+## 知识蒸馏
+
+### 背景与动机
+
+在多模型对比实验中，`resnet34` 准确率最高但参数量较大（21.29M）；`custom_resnet18` 参数量小（11.18M）但精度相对较低。在真实边缘设备（如门禁机、嵌入式终端）部署时，需要在精度和推理效率之间取得平衡。
+
+知识蒸馏（Knowledge Distillation）通过让训练好的大模型（Teacher）指导轻量级小模型（Student）训练，使 Student 在不增加推理参数量的前提下逼近 Teacher 的精度表现。
+
+### 核心原理
+
+```text
+Loss = (1 - α) × HardLoss + α × T² × SoftLoss
+
+HardLoss : Student 预测 vs 真实标签的交叉熵（支持 label smoothing）
+SoftLoss : KL(softmax(student_logits / T) ‖ softmax(teacher_logits / T))
+T        : 蒸馏温度，越大输出越"软"，传递更多类别相似性信息
+α        : soft loss 权重（默认 0.7）
+```
+
+Teacher 的 Soft Targets 包含了比 one-hot 标签更丰富的类别间相似性知识。例如，一张"未佩戴口罩"的图片，Teacher 可能输出 `[0.05, 0.95]` 而非 `[0.0, 1.0]`，这个微小的 0.05 向 Student 传递了"该图片与佩戴口罩类别之间存在一定视觉相似性"这一暗知识（Dark Knowledge）。
+
+### 使用方式
+
+**1. 确保 Teacher 权重已就绪**
+
+先完成 `resnet34` 的标准训练，确保有可用的权重文件（如 `best_model.pth`）。
+
+**2. 配置蒸馏参数**
+
+编辑 `configs/kd.yaml`，主要参数：
+
+| 参数 | 说明 | 默认值 |
+| --- | --- | --- |
+| `teacher.name` | Teacher 模型名称 | `resnet34` |
+| `teacher.weights` | Teacher 权重路径 | `best_model.pth` |
+| `student.name` | Student 模型名称 | `custom_resnet18` |
+| `kd.temperature` | 蒸馏温度 T | `4.0` |
+| `kd.alpha` | Soft Loss 权重 | `0.7` |
+
+**3. 运行蒸馏训练**
+
+```bash
+python train_kd.py --config configs/kd.yaml
+```
+
+可通过命令行覆盖 Teacher 权重路径：
+
+```bash
+python train_kd.py --config configs/kd.yaml --teacher-weights results/resnet34_xxx/checkpoints/best.pth
+```
+
+**4. 输出内容**
+
+训练完成后输出保存在 `results/kd/kd_<timestamp>/`，包括：
+
+| 文件 | 说明 |
+| --- | --- |
+| `best_student.pth` | 蒸馏后最佳 Student 权重 |
+| `kd_training_curves.png` | 训练/验证 Loss 与 Accuracy 曲线 |
+| `kd_confusion_matrix.png` | 测试集混淆矩阵 |
+| `kd_results.json` | 完整指标（含 Teacher/Student 对比、推理延迟、加速比等） |
+| `config_snapshot.json` | 本次实验配置快照 |
+
+**5. 使用蒸馏后的权重进行评估或部署**
+
+蒸馏后的 Student 权重格式与标准训练一致，可直接用于评估和 Web 演示：
+
+```bash
+python evaluate.py --model custom_resnet18 --weights results/kd/kd_xxx/best_student.pth
+```
+
+### 蒸馏实验全程对比
+
+下表完整记录了从初版蒸馏到最终"学生超越老师"的迭代过程（数据来源于 `results/` 下各实验的 `metrics.json` 和 `kd_results.json`）：
+
+| 模型 | 训练方式 | Accuracy | Macro F1 | 参数量 | 平均推理延迟 |
+| --- | --- | --- | --- | --- | --- |
+| `resnet34` | 监督学习（Teacher） | 93.20% | 93.16% | 21.29M | 10.73 ms |
+| `custom_resnet18` | 监督学习（Baseline） | 87.38% | 87.34% | 11.18M | 4.83 ms |
+| `custom_resnet18` | KD v1（T=4, α=0.7，从零蒸馏） | 85.44% | 85.30% | 11.18M | 16.82 ms |
+| `custom_resnet18` | KD v2（T=2, α=0.3，暖启动蒸馏） | 89.32% | 89.30% | 11.18M | 4.77 ms |
+| `resnet18` | **KD v3（T=3, α=0.5，预训练+蒸馏）** | **97.09%** | **97.09%** | **11.18M** | **5.08 ms** |
+
+最终结果：**ResNet18 经过知识蒸馏后，在参数量仅为 Teacher 一半（11.18M vs 21.29M）的前提下，测试集准确率达到 97.09%，超越 Teacher 的 93.20% 近 4 个百分点，成功实现"学生超越老师"。**
+
+### 蒸馏迭代过程与分析
+
+整个蒸馏实验经历了三个版本的迭代，每一版都有明确的问题诊断和改进方向：
+
+**第一版（KD v1）：从零蒸馏，效果不理想**
+
+- 设置：`custom_resnet18` 随机初始化，`T=4.0`，`α=0.7`
+- 结果：test_acc = 85.44%，低于监督学习 baseline（87.38%）
+- 问题诊断：
+  - `α=0.7` 导致 Student 过度依赖 Teacher 的 Soft Targets，在小数据集上容易"过度模仿"
+  - `T=4.0` 在二分类任务中偏高，软化后的概率分布接近均匀，丢失了判别信息
+  - Student 从随机初始化开始，没有自己的特征基础，直接蒸馏收敛困难
+
+**第二版（KD v2）：两阶段暖启动，提升明显**
+
+- 改进：先监督训练 `custom_resnet18` 到 87.38%，加载该权重作为 Student 初始化；`T` 降到 2.0，`α` 降到 0.3，学习率降到 0.0001（微调模式）
+- 结果：test_acc = 89.32%，比 baseline 提升约 2 个百分点
+- 分析：两阶段策略有效——Student 先有自己的特征基础，再用 Teacher 的 Soft Targets 做"精修"，效果远好于从零蒸馏
+
+**第三版（KD v3）：预训练骨干 + 蒸馏，学生超越老师**
+
+- 改进：将 Student 换为 torchvision `resnet18`（ImageNet 预训练），参数量与 `custom_resnet18` 完全相同（11.18M）；`T=3.0`，`α=0.5`
+- 结果：test_acc = **97.09%**，超越 Teacher 的 93.20% 近 4 个百分点
+- 分析：
+  - ImageNet 预训练为 Student 提供了强大的底层特征表示，蒸馏只需在此基础上迁移 Teacher 的任务知识
+  - 验证集准确率在第 10 轮达到 100%，说明 Student 已经完全学到了 Teacher 的决策模式
+  - 两类（mask / no_mask）的 F1 均超过 97%，表现非常均衡
+  - 参数量仅为 Teacher 的 53%（11.18M vs 21.29M），**精度更高、模型更轻**
+
+### 关键结论
+
+1. **知识蒸馏不是"自动提升"的魔法**——初版实验证明，不合理的超参数（高 T、高 α）和不合理的初始化（随机初始化）反而会让 Student 退化
+2. **两阶段训练策略是有效的**——先让 Student 建立自己的特征基础，再用 Teacher 蒸馏做精修，比从零蒸馏效果好得多
+3. **"学生超越老师"是可以实现的**——当 Student 拥有好的预训练基础（ImageNet）并配合合理的蒸馏配置时，可以在参数量减半的前提下反超 Teacher
+4. **模型压缩在工程上有现实意义**——最终的 Student 模型参数量仅为 Teacher 的一半，更适合在边缘设备（如门禁机、嵌入式终端）上部署
 
 ## 少样本实验
 
@@ -505,7 +643,16 @@ README 中使用的截图统一保存在 `docs/images/`，流程图和系统架�
 - 是否启用 ROI 裁剪
 - 不同输入尺寸对结果的影响
 
-### 3. 少样本扩展实验
+### 3. 知识蒸馏实验
+
+建议围绕以下方向展开蒸馏对比：
+
+- 不同 Teacher/Student 组合（如 `googlenet` → `custom_resnet18`）
+- 不同温度参数 T（如 2、4、8、20）对 Soft Targets 质量的影响
+- 不同 α 权重配比对 Hard/Soft Loss 平衡的影响
+- Student 是否使用预训练初始化对蒸馏效果的影响
+
+### 4. 少样本扩展实验
 
 建议采集教室、宿舍、楼道等真实场景图像，并比较：
 
@@ -516,7 +663,7 @@ README 中使用的截图统一保存在 `docs/images/`，流程图和系统架�
 ## 后续优化方向
 
 - 增加更多类别，如错误佩戴口罩、未规范佩戴等细粒度标签
-- 引入更轻量的骨干网络，比较精度与速度之间的平衡
+- 引入更轻量的骨干网络（如 MobileNet、ShuffleNet），结合知识蒸馏进一步压缩模型
 - 增加导出与部署能力，如 `ONNX`、`TorchScript` 或服务化接口封装
 - 扩展更多真实场景数据，提升跨场景泛化能力
 

@@ -1,13 +1,27 @@
+"""
+推理结果封装：根据模型输出概率构建单模型/多模型预测 payload、多数投票与一致性统计、已知真值下的分析结果。
+"""
 from collections import Counter
 
 import torch
 
 
 def _round_float(value, digits=4):
+    """将数值转为浮点数并四舍五入到指定小数位，用于统一 JSON 输出格式。"""
     return round(float(value), digits)
 
 
 def _build_ranked_items(scores, label_map):
+    """
+    将类别分数按从高到低排序，构建带 rank、class_name、label、score 的列表，供前端展示 top-k。
+
+    Args:
+        scores: {class_name: score} 字典。
+        label_map: 类别名到显示标签的映射。
+
+    Returns:
+        list: 每项为 {"rank", "class_name", "label", "score"}。
+    """
     ranked_items = sorted(scores.items(), key=lambda item: item[1], reverse=True)
     return [
         {
@@ -33,7 +47,29 @@ def build_prediction_payload(
     extra_meta=None,
     display_name=None,
     offline_metrics=None,
+    training_remark=None,
 ):
+    """
+    根据模型输出的概率、类别名和配置构建单模型预测结果 payload，供 API/前端使用。
+
+    Args:
+        probabilities: 各类别概率的一维 tensor（或可 flatten 的 tensor）。
+        class_names: 类别名列表。
+        label_map: 类别名到显示标签的映射。
+        model_name: 模型名称。
+        weights_path: 权重文件路径（字符串）。
+        confidence_threshold: 置信度阈值，低于则标记为不确定。
+        roi_info: 可选，ROI 提取信息（如 detector_used、bbox 等）。
+        device: 可选，运行设备描述。
+        input_source: 输入来源标识，如 "upload"、"single_image"。
+        extra_meta: 可选，额外元信息（如 inference_time_ms）。
+        display_name: 可选，模型显示名称。
+        offline_metrics: 可选，离线指标（如 test_accuracy、macro_f1）。
+        training_remark: 可选，训练条件说明。
+
+    Returns:
+        dict: 含 model、class_names、label_map、prediction、scores、top_k、quality、roi、meta、offline_metrics。
+    """
     probabilities = probabilities.detach().cpu().flatten()
     prediction_index = int(torch.argmax(probabilities).item())
     confidence = float(probabilities[prediction_index].item())
@@ -60,6 +96,7 @@ def build_prediction_payload(
             "model_name": model_name,
             "display_name": display_name or model_name,
             "weights_path": weights_path,
+            "training_remark": training_remark,
         },
         "class_names": class_names,
         "label_map": label_map,
@@ -82,6 +119,18 @@ def build_prediction_payload(
 
 
 def build_multi_model_payload(predictions, input_source="upload"):
+    """
+    将多个模型的预测结果汇总为多模型对比 payload（多数投票、平均分数、一致性、图表数据等）。
+
+    Args:
+        predictions: build_prediction_payload 返回的 dict 列表，每个元素对应一个模型。
+        input_source: 输入来源标识。
+
+    Returns:
+        dict: status、class_names、label_map、models、summary（多数类、比例、平均置信度等）、
+              consensus（是否一致、票数分布、分歧模型）、chart_data（用于前端图表）。
+        若 predictions 为空则返回错误 status。
+    """
     if not predictions:
         return {
             "status": "error",
@@ -199,6 +248,20 @@ def build_multi_model_payload(predictions, input_source="upload"):
 
 
 def analyze_truth_from_predictions(predictions, truth_class_name):
+    """
+    在已知真实标签的前提下，分析各模型预测是否正确、置信度与真实类分数差距、高置信度错判等。
+
+    Args:
+        predictions: build_prediction_payload 返回的 dict 列表（多模型同一张图）。
+        truth_class_name: 该样本的真实类别名（必须在 class_names 中）。
+
+    Returns:
+        dict: status、truth_class_name、truth_label、summary（正确数、错误数、多数投票是否对等）、
+              per_model（每模型详细分析）、chart_data、high_confidence_misses、insights（文字结论）。
+
+    Raises:
+        ValueError: predictions 为空或 truth_class_name 不在已知类别中时抛出。
+    """
     if not predictions:
         raise ValueError("predictions is required.")
 
@@ -224,6 +287,7 @@ def analyze_truth_from_predictions(predictions, truth_class_name):
         model_analysis = {
             "model_name": item["model"]["model_name"],
             "display_name": item["model"]["display_name"],
+            "training_remark": item["model"].get("training_remark"),
             "predicted_class_name": predicted_class_name,
             "predicted_label": item["prediction"]["label"],
             "confidence": _round_float(confidence),

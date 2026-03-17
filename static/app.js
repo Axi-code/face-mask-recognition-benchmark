@@ -192,6 +192,7 @@ function renderModelCards(models) {
                     <span>离线延迟：${formatMs(item.offline_metrics?.avg_inference_latency_ms)}</span>
                     <span>参数量：${formatCount(item.offline_metrics?.parameter_count)}</span>
                 </div>
+                ${item.model?.training_remark ? `<div class="catalog-training-remark" title="该模型训练时使用的设置">训练条件：${item.model.training_remark}</div>` : ""}
                 <div class="advice-inline">${item.quality?.advice || ""}</div>
             </article>
         `;
@@ -284,6 +285,7 @@ function renderTruthAnalysis(payload) {
                 <span>置信度偏差：${formatPercent(item.confidence_gap)}</span>
                 <span>${item.is_high_confidence_miss ? "高置信度误判" : "无明显过度自信"}</span>
             </div>
+            ${item.training_remark ? `<div class="catalog-training-remark">训练条件：${item.training_remark}</div>` : ""}
         </article>
     `).join("");
 }
