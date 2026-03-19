@@ -5,7 +5,7 @@ from flask import Flask, render_template
 import yaml
 
 from api import MaskPredictor, create_api_blueprint
-from utils.checkpointing import summarize_checkpoint
+from utils.checkpointing import DEFAULT_LABEL_MAP, summarize_checkpoint
 
 
 def load_app_config(config_path="configs/baseline.yaml"):
@@ -20,6 +20,28 @@ def load_app_config(config_path="configs/baseline.yaml"):
     """
     with open(config_path, "r", encoding="utf-8") as file:
         return yaml.safe_load(file)
+
+
+def _summarize_protonet_checkpoint(weights_path, proto_data):
+    """从 ProtoNet checkpoint 与 proto_metrics 汇总为模型选项格式。"""
+    import torch
+    checkpoint = torch.load(weights_path, map_location="cpu")
+    class_names = checkpoint.get("class_names") or proto_data.get("class_names") or ["mask", "no_mask"]
+    label_map = {cn: DEFAULT_LABEL_MAP.get(cn, cn) for cn in class_names}
+    return {
+        "model_name": "protonet",
+        "weights_path": str(Path(weights_path)),
+        "class_names": class_names,
+        "label_map": label_map,
+        "image_size": 224,
+        "confidence_threshold": 0.65,
+        "roi_mode": "face",
+        "roi_fallback": "smart_crop",
+        "backbone": checkpoint.get("backbone") or proto_data.get("backbone", "resnet18"),
+        "embedding_dim": checkpoint.get("embedding_dim") or proto_data.get("embedding_dim", 256),
+        "n_way": proto_data.get("n_way", 2),
+        "k_shot": proto_data.get("k_shot", 1),
+    }
 
 
 def collect_model_options(config):
@@ -126,9 +148,42 @@ def collect_model_options(config):
         options.append(option)
         seen_paths.add(resolved_path)
 
+    for proto_metrics_path in sorted(results_root.glob("**/proto_metrics.json")):
+        try:
+            proto_data = json.loads(proto_metrics_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        checkpoint_path = proto_data.get("checkpoint")
+        if not checkpoint_path:
+            continue
+        checkpoint_path = Path(checkpoint_path)
+        if not checkpoint_path.is_absolute():
+            checkpoint_path = Path.cwd() / checkpoint_path
+        if not checkpoint_path.exists():
+            continue
+        resolved_path = checkpoint_path.resolve()
+        if resolved_path in seen_paths:
+            continue
+        try:
+            option = _summarize_protonet_checkpoint(checkpoint_path, proto_data)
+        except Exception:
+            continue
+        option["source"] = "fewshot"
+        option["is_protonet"] = True
+        option["support_root"] = str(Path("data/train"))
+        option["best_val_accuracy"] = proto_data.get("best_val_acc")
+        option["test_accuracy"] = proto_data.get("best_val_acc")
+        acc = option.get("best_val_accuracy")
+        option["display_name"] = f"ProtoNet（少样本）| val_acc={acc:.3f}" if acc is not None else "ProtoNet（少样本）"
+        option["training_remark"] = f"少样本 ProtoNet, {proto_data.get('n_way', 2)}-way {proto_data.get('k_shot', 1)}-shot"
+        options.append(option)
+        seen_paths.add(resolved_path)
+
     for opt in options:
         if "kd_role" not in opt:
             opt["kd_role"] = None
+        if "is_protonet" not in opt:
+            opt["is_protonet"] = False
 
     if options:
         return options

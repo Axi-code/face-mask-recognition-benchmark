@@ -5,8 +5,9 @@ import time
 import torch
 from PIL import Image
 
+from fewshot.proto_net import ProtoNet, compute_prototypes, prototypical_logits
 from utils.checkpointing import build_model_from_checkpoint, get_inference_config, load_checkpoint
-from utils.dataset import build_inference_transform
+from utils.dataset import DEFAULT_MEAN, DEFAULT_STD, build_inference_transform
 from utils.inference import analyze_truth_from_predictions, build_multi_model_payload, build_prediction_payload
 from utils.roi import RegionExtractor
 
@@ -108,6 +109,82 @@ class MaskPredictor:
         }
         return entry
 
+    def _load_protonet_entry(self, option):
+        """加载 ProtoNet  checkpoint，从 support_root 加载支撑集并预计算原型。"""
+        weights_path = option["weights_path"]
+        support_root = Path(option.get("support_root", "data/train"))
+        checkpoint = torch.load(weights_path, map_location="cpu")
+        backbone = checkpoint.get("backbone", "resnet18")
+        embedding_dim = checkpoint.get("embedding_dim", 256)
+        class_names = checkpoint.get("class_names", ["mask", "no_mask"])
+        n_way = len(class_names)
+        k_shot = option.get("k_shot", 1)
+        mean = self.default_mean or DEFAULT_MEAN
+        std = self.default_std or DEFAULT_STD
+        image_size = option.get("image_size", 224)
+        transform = build_inference_transform(image_size, mean, std)
+        region_extractor = RegionExtractor(
+            mode=option.get("roi_mode", "face"),
+            fallback_mode=option.get("roi_fallback", "smart_crop"),
+        )
+
+        model = ProtoNet(backbone=backbone, embedding_dim=embedding_dim, pretrained=False)
+        model.load_state_dict(checkpoint["state_dict"])
+        model = model.to(self.device)
+        model.eval()
+
+        support_images_list = []
+        support_labels_list = []
+        for label_idx, class_name in enumerate(class_names):
+            class_dir = support_root / class_name
+            if not class_dir.is_dir():
+                raise FileNotFoundError(f"ProtoNet 支撑集缺少类别目录: {class_dir}")
+            exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+            paths = [p for p in sorted(class_dir.iterdir()) if p.suffix.lower() in exts][:k_shot]
+            if len(paths) < k_shot:
+                raise FileNotFoundError(f"ProtoNet 支撑集 {class_name} 至少需要 {k_shot} 张图，当前 {len(paths)} 张")
+            for p in paths:
+                img = Image.open(p).convert("RGB")
+                roi_img, _ = region_extractor.extract(img)
+                support_images_list.append(transform(roi_img))
+                support_labels_list.append(label_idx)
+
+        support_tensor = torch.stack(support_images_list).to(self.device)
+        support_labels = torch.tensor(support_labels_list, dtype=torch.long, device=self.device)
+        with torch.no_grad():
+            support_emb = model(support_tensor)
+            prototypes = compute_prototypes(support_emb, support_labels, n_way)
+
+        label_map = option.get("label_map", {cn: cn for cn in class_names})
+        return {
+            "model": model,
+            "model_name": "protonet",
+            "display_name": option.get("display_name", "ProtoNet（少样本）"),
+            "weights_path": str(Path(weights_path)),
+            "class_names": class_names,
+            "label_map": label_map,
+            "image_size": image_size,
+            "mean": mean,
+            "std": std,
+            "confidence_threshold": option.get("confidence_threshold", 0.65),
+            "roi_mode": option.get("roi_mode", "face"),
+            "roi_fallback": option.get("roi_fallback", "smart_crop"),
+            "region_extractor": region_extractor,
+            "prototypes": prototypes,
+            "n_way": n_way,
+            "is_protonet": True,
+            "offline_metrics": {
+                "best_val_accuracy": option.get("best_val_accuracy"),
+                "test_accuracy": option.get("test_accuracy"),
+                "macro_f1": option.get("macro_f1"),
+                "avg_inference_latency_ms": option.get("avg_inference_latency_ms"),
+                "parameter_count": option.get("parameter_count"),
+            },
+            "source": option.get("source", "fewshot"),
+            "kd_role": None,
+            "training_remark": option.get("training_remark"),
+        }
+
     def register_model_options(self, model_options):
         """
         注册并加载一批模型选项：去重权重路径、逐个加载，更新 loaded_models 与 model_options，
@@ -130,10 +207,19 @@ class MaskPredictor:
             resolved_path = str(Path(weights_path).resolve())
             if resolved_path in seen_paths:
                 continue
-            try:
-                entry = self._load_model_entry({**option, "weights_path": weights_path})
-            except Exception:
-                continue
+            if option.get("is_protonet"):
+                support_root = Path(option.get("support_root", "data/train"))
+                if not support_root.exists():
+                    continue
+                try:
+                    entry = self._load_protonet_entry({**option, "weights_path": weights_path})
+                except Exception:
+                    continue
+            else:
+                try:
+                    entry = self._load_model_entry({**option, "weights_path": weights_path})
+                except Exception:
+                    continue
             self.loaded_models[resolved_path] = entry
             om = entry["offline_metrics"]
             self.model_options.append(
@@ -151,6 +237,7 @@ class MaskPredictor:
                     "source": entry["source"],
                     "kd_role": option.get("kd_role"),
                     "training_remark": entry.get("training_remark"),
+                    "is_protonet": entry.get("is_protonet", False),
                     "best_val_accuracy": om.get("best_val_accuracy"),
                     "test_accuracy": om.get("test_accuracy"),
                     "macro_f1": om.get("macro_f1"),
@@ -187,8 +274,13 @@ class MaskPredictor:
         image_tensor, roi_info = self._preprocess_pil(image, entry)
         start_time = time.perf_counter()
         with torch.no_grad():
-            logits = entry["model"](image_tensor)
-            probabilities = torch.softmax(logits, dim=1).squeeze(0).cpu()
+            if entry.get("is_protonet"):
+                query_emb = entry["model"](image_tensor)
+                logits = prototypical_logits(query_emb, entry["prototypes"])
+                probabilities = torch.softmax(logits, dim=1).squeeze(0).cpu()
+            else:
+                logits = entry["model"](image_tensor)
+                probabilities = torch.softmax(logits, dim=1).squeeze(0).cpu()
         inference_time_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
         return build_prediction_payload(
@@ -204,6 +296,7 @@ class MaskPredictor:
             display_name=entry["display_name"],
             offline_metrics=entry["offline_metrics"],
             training_remark=entry.get("training_remark"),
+            is_fewshot=entry.get("is_protonet"),
             extra_meta={
                 "inference_time_ms": inference_time_ms,
                 "roi_mode": entry["roi_mode"],

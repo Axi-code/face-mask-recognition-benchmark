@@ -97,12 +97,15 @@
                 <div id="resultState" class="result-state">请选择一张图片或使用摄像头开始评测。</div>
                 <div class="model-catalog" id="modelCatalog">
                     {% for option in model_catalog %}
-                    <article class="catalog-card{% if option.kd_role == 'kd_student' %} catalog-card--kd{% endif %}">
+                    <article class="catalog-card{% if option.kd_role == 'kd_student' %} catalog-card--kd{% endif %}{% if option.is_protonet %} catalog-card--fewshot{% endif %}">
                         <div class="catalog-head">
                             <strong>{{ option.display_name }}</strong>
                             <span class="catalog-badge">{{ option.source }}</span>
                             {% if option.kd_role == 'kd_student' %}
                             <span class="catalog-badge kd-badge-student">KD Student</span>
+                            {% endif %}
+                            {% if option.is_protonet %}
+                            <span class="catalog-badge fewshot-badge">少样本</span>
                             {% endif %}
                         </div>
                         <div class="catalog-meta">

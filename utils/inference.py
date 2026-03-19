@@ -48,6 +48,7 @@ def build_prediction_payload(
     display_name=None,
     offline_metrics=None,
     training_remark=None,
+    is_fewshot=None,
 ):
     """
     根据模型输出的概率、类别名和配置构建单模型预测结果 payload，供 API/前端使用。
@@ -97,6 +98,7 @@ def build_prediction_payload(
             "display_name": display_name or model_name,
             "weights_path": weights_path,
             "training_remark": training_remark,
+            "is_fewshot": is_fewshot,
         },
         "class_names": class_names,
         "label_map": label_map,
@@ -288,6 +290,7 @@ def analyze_truth_from_predictions(predictions, truth_class_name):
             "model_name": item["model"]["model_name"],
             "display_name": item["model"]["display_name"],
             "training_remark": item["model"].get("training_remark"),
+            "is_fewshot": item["model"].get("is_fewshot"),
             "predicted_class_name": predicted_class_name,
             "predicted_label": item["prediction"]["label"],
             "confidence": _round_float(confidence),

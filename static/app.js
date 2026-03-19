@@ -167,11 +167,13 @@ function renderModelCards(models) {
             : `未裁剪 (${item.roi?.detector_used || "兜底"})`;
         const qualityClass = item.quality?.is_uncertain ? "pending" : "success";
         const qualityText = item.quality?.is_uncertain ? "低置信度" : "稳定";
+        const fewshotBadge = item.model?.is_fewshot ? '<span class="catalog-badge fewshot-badge">少样本</span>' : "";
         return `
             <article class="model-card">
                 <div class="catalog-head">
                     <strong>${item.model.display_name}</strong>
                     <span class="catalog-badge ${qualityClass}">${qualityText}</span>
+                    ${fewshotBadge}
                 </div>
                 <div class="model-card-main">
                     <div>
@@ -272,11 +274,14 @@ function renderTruthAnalysis(payload) {
     truthScoreChart.innerHTML = (payload.chart_data?.truth_score_comparison || [])
         .map((item) => createBarRow(item.display_name, formatPercent(item.truth_score), item.truth_score, "accent"))
         .join("");
-    truthTable.innerHTML = (payload.per_model || []).map((item) => `
+    truthTable.innerHTML = (payload.per_model || []).map((item) => {
+        const fewshotBadge = item.is_fewshot ? '<span class="catalog-badge fewshot-badge">少样本</span>' : "";
+        return `
         <article class="truth-row ${item.is_correct ? "correct" : "wrong"}">
             <div class="catalog-head">
                 <strong>${item.display_name}</strong>
                 <span class="catalog-badge ${item.is_correct ? "success" : "error"}">${item.is_correct ? "正确" : "错误"}</span>
+                ${fewshotBadge}
             </div>
             <div class="catalog-meta compact">
                 <span>预测：${item.predicted_label}</span>
@@ -287,7 +292,8 @@ function renderTruthAnalysis(payload) {
             </div>
             ${item.training_remark ? `<div class="catalog-training-remark">训练条件：${item.training_remark}</div>` : ""}
         </article>
-    `).join("");
+    `;
+    }).join("");
 }
 
 async function predictWithFormData(formData) {

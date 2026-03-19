@@ -290,7 +290,6 @@ MaskBench/
 ├── train.py                    # 分类训练入口
 ├── train_kd.py                 # 知识蒸馏训练入口（Teacher → Student）
 ├── evaluate.py                 # 分类评估与单图预测入口
-├── model_train.py              # 训练别名入口
 ├── requirements.txt            # 依赖列表
 ├── configs/
 │   ├── baseline.yaml           # 默认训练配置
@@ -529,21 +528,191 @@ python evaluate.py --model custom_resnet18 --weights results/kd/kd_xxx/best_stud
 
 ## 少样本实验
 
-项目提供 `ProtoNet` 作为少样本扩展方向，用于验证模型在新场景和低样本条件下的适配能力。
+项目提供 **Prototypical Networks（ProtoNet）** 作为少样本扩展方向，用于验证模型在新场景和低样本条件下的适配能力。当标注数据稀缺或需要快速适配新类别时，ProtoNet 通过「原型 + 距离」的元学习范式，仅用每类少量样本即可完成分类。
 
-训练示例：
+### 核心概念
 
-```bash
-python fewshot/train_proto.py --train-root data/train --val-root data/test --n-way 2 --k-shot 1 --q-query 3
+| 概念 | 说明 |
+| --- | --- |
+| **N-way** | 每个 episode 采样的类别数（如 2 表示 mask / no_mask 二分类） |
+| **K-shot** | 每类支撑集（Support Set）样本数，用于计算类别原型 |
+| **Q-query** | 每类查询集（Query Set）样本数，用于计算 loss 与准确率 |
+| **Episode** | 一次元学习任务：随机采样 N 类，每类 K+Q 张图，组成一个训练/评估单元 |
+
+### 数据流图
+
+下图展示从原始数据到 ProtoNet 训练与评估的完整数据流：
+
+```mermaid
+flowchart TB
+    subgraph DATA[数据层]
+        D1[data/train<br/>mask/ no_mask/]
+        D2[data/test<br/>mask/ no_mask/]
+    end
+
+    subgraph EPISODE[Episode 采样层]
+        E1[EpisodeDataset<br/>训练用增强+归一化 验证用仅归一化]
+        E2[每 epoch 生成 episodes_per_epoch 个 episode]
+        E3[每个 episode 随机采样 N 类 每类 K+Q 张]
+    end
+
+    subgraph SAMPLE[单 Episode 输出]
+        S1[Support Images<br/>N×K 张 已变换]
+        S2[Query Images<br/>N×Q 张 已变换]
+    end
+
+    subgraph PROTONET[ProtoNet 前向]
+        P1[Encoder<br/>ResNet18/34 去掉 fc]
+        P2[Projection<br/>feature_dim → embedding_dim]
+        P3[Support Embeddings]
+        P4[Query Embeddings]
+        P5[compute_prototypes<br/>每类 Support 嵌入的均值]
+        P6[prototypical_logits<br/>-cdist 负欧氏距离]
+        P7[CrossEntropyLoss]
+    end
+
+    subgraph LOOP[训练循环]
+        L1[反向传播 + 优化]
+        L2[验证集评估]
+        L3[val_acc 最佳时保存]
+    end
+
+    subgraph OUTPUT[输出]
+        O1[best_proto.pth]
+        O2[proto_history.png]
+        O3[proto_metrics.json]
+    end
+
+    D1 --> E1
+    D2 --> E1
+    E1 --> E2
+    E2 --> E3
+    E3 --> S1
+    E3 --> S2
+    S1 --> P1
+    S2 --> P1
+    P1 --> P2
+    P2 --> P3
+    P2 --> P4
+    P3 --> P5
+    P5 --> P6
+    P4 --> P6
+    P6 --> P7
+    P7 --> L1
+    L1 --> L2
+    L2 --> L3
+    L3 --> O1
+    L3 --> O2
+    L3 --> O3
 ```
 
-评估示例：
+### 单 Episode 内部计算流程
 
-```bash
-python fewshot/eval_proto.py --data-root data/test --checkpoint results/fewshot/xxx/best_proto.pth --n-way 2 --k-shot 1 --q-query 3
+每个 episode 在 ProtoNet 中的具体计算步骤如下（与 `proto_net.py` 实现严格一致）：
+
+```mermaid
+flowchart LR
+    subgraph INPUT[输入]
+        A1[Support Images<br/>N×K 张]
+        A2[Query Images<br/>N×Q 张]
+    end
+
+    subgraph ENCODER[编码器]
+        B1[ResNet18/34<br/>去掉 fc 层]
+        B2[Flatten]
+        B3[Linear 投影<br/>512→256]
+    end
+
+    subgraph EMBED[嵌入空间]
+        C1[Support Embeddings<br/>N×K × embedding_dim]
+        C2[Query Embeddings<br/>N×Q × embedding_dim]
+    end
+
+    subgraph PROTO[原型计算]
+        D1[按类别分组]
+        D2[每类取均值<br/>compute_prototypes]
+        D3[Prototypes<br/>N × embedding_dim]
+    end
+
+    subgraph LOSS[损失与预测]
+        E1[-cdist 负距离<br/>prototypical_logits]
+        E2[Logits<br/>N_query × n_way]
+        E3[CrossEntropy<br/>query_labels]
+    end
+
+    A1 --> B1
+    A2 --> B1
+    B1 --> B2
+    B2 --> B3
+    B3 --> C1
+    B3 --> C2
+    C1 --> D1
+    D1 --> D2
+    D2 --> D3
+    C2 --> E1
+    D3 --> E1
+    E1 --> E2
+    E2 --> E3
 ```
 
-对于当前二分类数据，建议先完成 `2-way` 基线实验；如需进一步开展 few-shot 对比，可扩展到更多佩戴状态类别。
+### 模块与文件对应关系
+
+| 模块 | 文件 | 职责 |
+| --- | --- | --- |
+| Episode 数据集 | `fewshot/episode_dataset.py` | 按 N-way K-shot 组织 episode，每 epoch 随机采样 |
+| 原型网络 | `fewshot/proto_net.py` | Encoder + 投影、原型计算、距离 logits、损失 |
+| 训练入口 | `fewshot/train_proto.py` | 构建 DataLoader、训练循环、保存最佳权重与曲线 |
+| 评估入口 | `fewshot/eval_proto.py` | 加载 checkpoint，在测试 episode 上评估 |
+
+### 使用方式
+
+**1. 数据要求**
+
+- 目录结构需与主分类一致：`data/train/mask/`、`data/train/no_mask/` 等
+- 每个类别至少包含 `k_shot + q_query` 张有效图片（如 1-shot 3-query 时每类至少 4 张）
+
+**2. 训练**
+
+```bash
+python fewshot/train_proto.py --train-root data/train --val-root data/test --n-way 2 --k-shot 1 --q-query 3 --pretrained
+```
+
+常用参数：
+
+| 参数 | 说明 | 默认值 |
+| --- | --- | --- |
+| `--train-root` | 训练数据根目录 | `data/train` |
+| `--val-root` | 验证数据根目录 | `data/test` |
+| `--backbone` | 骨干网络 | `resnet18` |
+| `--n-way` | 类别数 | `2` |
+| `--k-shot` | 每类支撑样本数 | `1` |
+| `--q-query` | 每类查询样本数 | `3` |
+| `--episodes-per-epoch` | 每 epoch episode 数 | `50` |
+| `--pretrained` | 使用 ImageNet 预训练 | 关闭 |
+
+**3. 评估**
+
+```bash
+python fewshot/eval_proto.py --data-root data/test --checkpoint results/fewshot/proto_resnet18_xxx/best_proto.pth --n-way 2 --k-shot 1 --q-query 3
+```
+
+**4. 输出内容**
+
+训练完成后输出保存在 `results/fewshot/proto_<backbone>_<timestamp>/`：
+
+| 文件 | 说明 |
+| --- | --- |
+| `best_proto.pth` | 最佳模型权重（含 state_dict、backbone、embedding_dim、n_way、k_shot、q_query、class_names） |
+| `proto_history.png` | 训练/验证 Loss 与 Accuracy 曲线 |
+| `proto_metrics.json` | 完整指标与配置 |
+
+### 扩展建议
+
+对于当前二分类数据，建议先完成 `2-way 1-shot 3-query` 基线实验；如需进一步开展 few-shot 对比，可：
+
+- 增加 `k_shot`（如 5-shot）观察支撑样本数对精度的影响
+- 扩展更多佩戴状态类别（如错误佩戴、未规范佩戴）进行多 way 实验
+- 采集教室、宿舍、楼道等新场景，比较 ProtoNet 与普通监督模型的适应效果
 
 ## 实验结果说明
 

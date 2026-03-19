@@ -490,6 +490,16 @@ video {
     color: #fff !important;
 }
 
+.fewshot-badge {
+    background: #7c3aed !important;
+    color: #fff !important;
+}
+
+.catalog-card--fewshot {
+    border: 2px solid #8b5cf6;
+    box-shadow: 0 0 0 1px #ddd6fe;
+}
+
 .kd-note {
     margin-top: 0.6rem;
     font-size: 0.8rem;

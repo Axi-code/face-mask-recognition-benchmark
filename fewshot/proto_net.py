@@ -3,6 +3,18 @@ from torch import nn
 from torchvision import models as tv_models
 
 
+def _load_resnet(model_fn, weights_attr, pretrained):
+    """兼容新旧版 torchvision：新版用 weights，旧版用 pretrained。"""
+    try:
+        weights_enum = getattr(tv_models, weights_attr, None)
+        if weights_enum is None:
+            raise TypeError("旧版 API")
+        w = weights_enum.DEFAULT if pretrained else None
+        return model_fn(weights=w)
+    except TypeError:
+        return model_fn(pretrained=pretrained)
+
+
 def build_encoder(backbone="resnet18", pretrained=False):
     """
     根据骨干网络名称构建特征编码器（去掉分类头的 CNN）。
@@ -18,17 +30,13 @@ def build_encoder(backbone="resnet18", pretrained=False):
         ValueError: 不支持的 backbone 时抛出。
     """
     if backbone == "resnet18":
-        model = tv_models.resnet18(
-            weights=tv_models.ResNet18_Weights.DEFAULT if pretrained else None
-        )
+        model = _load_resnet(tv_models.resnet18, "ResNet18_Weights", pretrained)
         feature_dim = model.fc.in_features
         encoder = nn.Sequential(*list(model.children())[:-1], nn.Flatten())
         return encoder, feature_dim
 
     if backbone == "resnet34":
-        model = tv_models.resnet34(
-            weights=tv_models.ResNet34_Weights.DEFAULT if pretrained else None
-        )
+        model = _load_resnet(tv_models.resnet34, "ResNet34_Weights", pretrained)
         feature_dim = model.fc.in_features
         encoder = nn.Sequential(*list(model.children())[:-1], nn.Flatten())
         return encoder, feature_dim
